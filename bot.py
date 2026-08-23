@@ -1,112 +1,220 @@
-import os
 import logging
+import os
+from html import escape
+
+import requests
 from dotenv import load_dotenv
 from telegram import Update
+from telegram.constants import ChatMemberStatus, ParseMode
 from telegram.ext import (
-    Updater,
+    ApplicationBuilder,
     CommandHandler,
+    ContextTypes,
     MessageHandler,
-    Filters,
-    CallbackContext,
+    filters,
 )
 
-# Muat variabel lingkungan dari file .env
 load_dotenv()
 
-# Ambil nilai dari .env (dengan error handling)
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-if not BOT_TOKEN:
-    raise ValueError("❌ BOT_TOKEN tidak ditemukan di file .env!")
 
-# Setup logging (simpan log ke file)
+if not BOT_TOKEN:
+    raise RuntimeError("BOT_TOKEN belum diatur di file .env")
+
+os.makedirs("logs", exist_ok=True)
+
 logging.basicConfig(
+    filename="logs/bot.log",
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO,
-    filename="logs/bot.log",  # Simpan log ke file
 )
+
 logger = logging.getLogger(__name__)
 
-# ===== HANDLER UNTUK PERINTAH =====
-def start(update: Update, context: CallbackContext) -> None:
-    """Handler untuk perintah /start."""
-    user = update.effective_user
-    update.message.reply_text(
-        f"👋 Halo, {user.first_name}!\n"
-        "Saya adalah **BlubcaBot**!\n"
-        "Ketik /help untuk melihat daftar perintah."
+
+async def start(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    if not update.message:
+        return
+
+    await update.message.reply_text(
+        "Halo! Saya BlubcaBot.\n\n"
+        "Gunakan /help untuk melihat daftar perintah."
     )
 
-def help_command(update: Update, context: CallbackContext) -> None:
-    """Handler untuk perintah /help."""
-    update.message.reply_text(
-        "📜 **Daftar Perintah BlubcaBot:**\n\n"
-        "🔹 /start - Mulai bot\n"
-        "🔹 /help - Bantuan\n"
-        "🔹 /meme - Kirim meme acak\n"
-        "🔹 /cuaca [kota] - Cek cuaca (contoh: /cuaca Jakarta)\n"
-        "🔹 /admin - Perintah admin (hanya untuk admin grup)\n\n"
-        "💡 *Catatan: Beberapa fitur memerlukan API key (misal: cuaca)."
+
+async def help_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    if not update.message:
+        return
+
+    await update.message.reply_text(
+        "Daftar perintah:\n\n"
+        "/start - Memulai bot\n"
+        "/help - Menampilkan bantuan\n"
+        "/meme - Menampilkan meme\n"
+        "/cuaca <kota> - Melihat cuaca\n"
+        "/admin - Mengecek status admin"
     )
 
-def meme_command(update: Update, context: CallbackContext) -> None:
-    """Handler untuk perintah /meme."""
-    meme_url = "https://i.imgur.com/4Z4Z4Z4.jpg"  # Ganti dengan URL meme
-    update.message.reply_photo(photo=meme_url)
 
-def weather_command(update: Update, context: CallbackContext) -> None:
-    """Handler untuk perintah /cuaca."""
+async def meme(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    if not update.message:
+        return
+
+    await update.message.reply_text(
+        "😄 Meme belum dikonfigurasi.\n"
+        "Tambahkan URL atau sumber meme pada fungsi meme()."
+    )
+
+
+async def weather(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    if not update.message:
+        return
+
     if not context.args:
-        update.message.reply_text("❌ Gunakan: /cuaca [nama_kota]")
+        await update.message.reply_text(
+            "Gunakan format:\n/cuaca Jakarta"
+        )
         return
 
     city = " ".join(context.args)
-    update.message.reply_text(
-        f"🌤️ Cuaca di **{city}** saat ini: Cerah (contoh)\n"
-        "*Untuk fitur cuaca yang sebenarnya, gunakan API OpenWeatherMap."
-    )
 
-def admin_command(update: Update, context: CallbackContext) -> None:
-    """Handler untuk perintah /admin (hanya untuk admin)."""
-    if not is_admin(update.message.from_user.id):
-        update.message.reply_text("❌ Anda bukan admin!")
+    try:
+        response = requests.get(
+            f"https://wttr.in/{city}",
+            params={"format": "3"},
+            timeout=10,
+        )
+        response.raise_for_status()
+
+        result = response.text.strip()
+
+        if not result:
+            result = "Data cuaca tidak ditemukan."
+
+        await update.message.reply_text(result)
+
+    except requests.RequestException:
+        logger.exception("Gagal mengambil data cuaca")
+        await update.message.reply_text(
+            "Maaf, data cuaca sedang tidak tersedia."
+        )
+
+
+async def admin(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    if not update.message or not update.effective_chat:
         return
 
-    update.message.reply_text("✅ Anda adalah admin!")
+    if not update.effective_user:
+        return
 
-def is_admin(user_id: int) -> bool:
-    """Cek apakah user adalah admin."""
-    ADMIN_IDS = [123456789]  # Ganti dengan ID Telegram admin Anda
-    return user_id in ADMIN_IDS
-
-# ===== HANDLER UNTUK PESAN BIASA =====
-def echo(update: Update, context: CallbackContext) -> None:
-    """Handler untuk pesan teks biasa."""
-    update.message.reply_text(f"💬 Anda bilang: {update.message.text}")
-
-# ===== FUNGSI UTAMA =====
-def main() -> None:
-    """Jalankan bot dengan error handling."""
     try:
-        # Inisialisasi bot
-        updater = Updater(BOT_TOKEN)
-        dispatcher = updater.dispatcher
+        member = await update.effective_chat.get_member(
+            update.effective_user.id
+        )
 
-        # Tambahkan handler
-        dispatcher.add_handler(CommandHandler("start", start))
-        dispatcher.add_handler(CommandHandler("help", help_command))
-        dispatcher.add_handler(CommandHandler("meme", meme_command))
-        dispatcher.add_handler(CommandHandler("cuaca", weather_command))
-        dispatcher.add_handler(CommandHandler("admin", admin_command))
-        dispatcher.add_handler(MessageHandler(Filters.text & ~Filters.command, echo))
+        is_admin = member.status in (
+            ChatMemberStatus.ADMINISTRATOR,
+            ChatMemberStatus.OWNER,
+        )
 
-        # Mulai polling
-        logger.info("🤖 Bot BlubcaBot sedang berjalan...")
-        updater.start_polling()
-        updater.idle()
+        if is_admin:
+            await update.message.reply_text(
+                "✅ Anda adalah admin grup."
+            )
+        else:
+            await update.message.reply_text(
+                "❌ Anda bukan admin grup."
+            )
 
-    except Exception as e:
-        logger.error(f"❌ Error: {e}", exc_info=True)
-        raise
+    except Exception:
+        logger.exception("Gagal memeriksa status admin")
+        await update.message.reply_text(
+            "Status admin tidak dapat diperiksa."
+        )
+
+
+async def echo(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    if not update.message or not update.message.text:
+        return
+
+    text = escape(update.message.text)
+
+    await update.message.reply_text(
+        f"<b>Pesan Anda:</b>\n{text}",
+        parse_mode=ParseMode.HTML,
+    )
+
+
+async def error_handler(
+    update: object,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    logger.exception(
+        "Terjadi error saat memproses update",
+        exc_info=context.error,
+    )
+
+
+def main() -> None:
+    application = (
+        ApplicationBuilder()
+        .token(BOT_TOKEN)
+        .build()
+    )
+
+    application.add_handler(
+        CommandHandler("start", start)
+    )
+
+    application.add_handler(
+        CommandHandler("help", help_command)
+    )
+
+    application.add_handler(
+        CommandHandler("meme", meme)
+    )
+
+    application.add_handler(
+        CommandHandler("cuaca", weather)
+    )
+
+    application.add_handler(
+        CommandHandler("admin", admin)
+    )
+
+    application.add_handler(
+        MessageHandler(
+            filters.TEXT & ~filters.COMMAND,
+            echo,
+        )
+    )
+
+    application.add_error_handler(error_handler)
+
+    logger.info("BlubcaBot mulai dijalankan")
+
+    application.run_polling(
+        allowed_updates=Update.ALL_TYPES
+    )
+
 
 if __name__ == "__main__":
     main()
