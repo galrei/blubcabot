@@ -1,7 +1,6 @@
 import asyncio
 import logging
 import os
-import random
 from html import escape
 from pathlib import Path
 
@@ -33,26 +32,13 @@ if not BOT_TOKEN:
     )
 
 BASE_DIR = Path(__file__).parent
-
 MEME_FOLDER = BASE_DIR / "assets" / "memes"
 
-ALLOWED_IMAGE_EXTENSIONS = {
-    ".jpg",
-    ".jpeg",
-    ".png",
-    ".webp",
-}
+ALLOWED_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
+ALLOWED_VIDEO_EXTENSIONS = {".mp4", ".mov", ".avi", ".mkv", ".webm"}
 
-ALLOWED_VIDEO_EXTENSIONS = {
-    ".mp4",
-    ".mov",
-    ".avi",
-    ".mkv",
-    ".webm",
-}
-
-MAX_IMAGE_SIZE = 10 * 1024 * 1024   # 10 MB (batas Telegram untuk foto)
-MAX_VIDEO_SIZE = 50 * 1024 * 1024   # 50 MB (batas Telegram untuk video)
+MAX_IMAGE_SIZE = 10 * 1024 * 1024   # 10 MB
+MAX_VIDEO_SIZE = 50 * 1024 * 1024   # 50 MB
 
 
 # =========================================================
@@ -72,13 +58,48 @@ logger = logging.getLogger(__name__)
 
 
 # =========================================================
+# FUNGSI BANTUAN
+# =========================================================
+
+def get_meme_files() -> list[Path]:
+    """Mengambil semua file meme yang valid dan diurutkan berdasarkan nama."""
+    if not MEME_FOLDER.exists():
+        MEME_FOLDER.mkdir(parents=True, exist_ok=True)
+        return []
+
+    files = []
+    for file in MEME_FOLDER.iterdir():
+        if not file.is_file():
+            continue
+
+        ext = file.suffix.lower()
+        size = file.stat().st_size
+
+        if ext in ALLOWED_IMAGE_EXTENSIONS and size <= MAX_IMAGE_SIZE:
+            files.append(file)
+        elif ext in ALLOWED_VIDEO_EXTENSIONS and size <= MAX_VIDEO_SIZE:
+            files.append(file)
+
+    # Urutkan berdasarkan nama file (A-Z)
+    return sorted(files, key=lambda x: x.name.lower())
+
+
+def get_description(meme_path: Path) -> str:
+    """Mengambil deskripsi/POV dari file .txt yang sama namanya."""
+    txt_file = meme_path.with_suffix(".txt")
+    if txt_file.exists() and txt_file.is_file():
+        try:
+            return txt_file.read_text(encoding="utf-8").strip()
+        except Exception:
+            return ""
+    return ""
+
+
+# =========================================================
 # /start
 # =========================================================
 
-async def start(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-) -> None:
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.message is None:
         return
 
@@ -92,10 +113,7 @@ async def start(
 # /help
 # =========================================================
 
-async def help_command(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-) -> None:
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.message is None:
         return
 
@@ -103,47 +121,24 @@ async def help_command(
         "Daftar perintah:\n\n"
         "/start - Memulai bot\n"
         "/help - Menampilkan bantuan\n"
-        "/meme - Mengirim meme (gambar/video) secara acak\n"
+        "/meme - Mengirim meme berikutnya (berurutan)\n"
         "/cuaca <kota> - Melihat cuaca\n"
-        "/admin - Mengecek status admin grup"
+        "/admin - Mengecek status admin grup\n\n"
+        "Cara menambah deskripsi/POV:\n"
+        "Buat file .txt dengan nama yang sama dengan media.\n"
+        "Contoh: kucing_lucu.mp4 → kucing_lucu.txt"
     )
 
 
 # =========================================================
-# /meme
+# /meme (BERURUTAN + DESKRIPSI)
 # =========================================================
 
-async def meme(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-) -> None:
+async def meme(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.message is None:
         return
 
-    # Membuat folder jika belum ada
-    if not MEME_FOLDER.exists():
-        MEME_FOLDER.mkdir(parents=True, exist_ok=True)
-
-        await update.message.reply_text(
-            "Folder meme belum berisi file.\n\n"
-            "Masukkan file gambar atau video ke folder:\n"
-            "assets/memes/"
-        )
-        return
-
-    # Mengambil semua file yang valid (gambar + video)
-    meme_files = []
-    for file in MEME_FOLDER.iterdir():
-        if not file.is_file():
-            continue
-
-        ext = file.suffix.lower()
-        size = file.stat().st_size
-
-        if ext in ALLOWED_IMAGE_EXTENSIONS and size <= MAX_IMAGE_SIZE:
-            meme_files.append(file)
-        elif ext in ALLOWED_VIDEO_EXTENSIONS and size <= MAX_VIDEO_SIZE:
-            meme_files.append(file)
+    meme_files = get_meme_files()
 
     if not meme_files:
         await update.message.reply_text(
@@ -151,50 +146,49 @@ async def meme(
             "Masukkan file dengan format:\n"
             "• Gambar: .jpg, .jpeg, .png, .webp (max 10 MB)\n"
             "• Video : .mp4, .mov, .avi, .mkv, .webm (max 50 MB)\n\n"
-            "ke folder assets/memes/"
+            "ke folder assets/memes/\n\n"
+            "Tips: Buat file .txt dengan nama yang sama untuk menambah deskripsi/POV."
         )
         return
 
-    # Mengambil nama meme yang terakhir dikirim di chat ini
-    last_meme = context.chat_data.get("last_meme")
+    # Ambil index terakhir di chat ini
+    last_index = context.chat_data.get("last_meme_index", -1)
 
-    # Menghapus meme terakhir dari daftar pilihan
-    available_memes = [
-        file
-        for file in meme_files
-        if file.name != last_meme
-    ]
+    # Pilih meme berikutnya (berurutan)
+    next_index = (last_index + 1) % len(meme_files)
+    selected_meme = meme_files[next_index]
 
-    # Jika hanya ada satu file, gunakan file tersebut
-    if not available_memes:
-        available_memes = meme_files
+    # Simpan index terbaru
+    context.chat_data["last_meme_index"] = next_index
 
-    # Memilih meme secara acak
-    selected_meme = random.choice(available_memes)
+    # Ambil deskripsi/POV
+    description = get_description(selected_meme)
 
-    # Menyimpan meme terakhir agar tidak langsung terulang
-    context.chat_data["last_meme"] = selected_meme.name
+    # Buat caption
+    if description:
+        caption = f"😂 {selected_meme.stem}\n\n{description}"
+    else:
+        caption = f"😂 {selected_meme.stem}"
 
     try:
         with selected_meme.open("rb") as media:
             ext = selected_meme.suffix.lower()
 
             if ext in ALLOWED_IMAGE_EXTENSIONS:
-                # Kirim sebagai foto
                 await update.message.reply_photo(
                     photo=media,
-                    caption=f"😂 {selected_meme.stem}",
+                    caption=caption,
                 )
             else:
-                # Kirim sebagai video
                 await update.message.reply_video(
                     video=media,
-                    caption=f"😂 {selected_meme.stem}",
-                    supports_streaming=True,  # biar bisa di-stream langsung
+                    caption=caption,
+                    supports_streaming=True,
                 )
 
         logger.info(
-            "Meme berhasil dikirim: %s",
+            "Meme berhasil dikirim (index %s): %s",
+            next_index,
             selected_meme.name,
         )
 
@@ -203,7 +197,6 @@ async def meme(
             "Gagal mengirim meme: %s",
             selected_meme.name,
         )
-
         await update.message.reply_text(
             "Gagal mengirim meme. Silakan coba lagi."
         )
@@ -213,10 +206,7 @@ async def meme(
 # /cuaca
 # =========================================================
 
-async def weather(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-) -> None:
+async def weather(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.message is None:
         return
 
@@ -249,25 +239,13 @@ async def weather(
         )
 
         response.raise_for_status()
-
-        result = response.text.strip()
-
-        if not result:
-            result = "Data cuaca tidak ditemukan."
+        result = response.text.strip() or "Data cuaca tidak ditemukan."
 
         await update.message.reply_text(result)
-
-        logger.info(
-            "Data cuaca dikirim untuk: %s",
-            city,
-        )
+        logger.info("Data cuaca dikirim untuk: %s", city)
 
     except requests.RequestException:
-        logger.exception(
-            "Gagal mengambil data cuaca untuk: %s",
-            city,
-        )
-
+        logger.exception("Gagal mengambil data cuaca untuk: %s", city)
         await update.message.reply_text(
             "Maaf, data cuaca sedang tidak tersedia."
         )
@@ -277,17 +255,11 @@ async def weather(
 # /admin
 # =========================================================
 
-async def admin(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-) -> None:
+async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.message is None:
         return
 
-    if update.effective_chat is None:
-        return
-
-    if update.effective_user is None:
+    if update.effective_chat is None or update.effective_user is None:
         return
 
     try:
@@ -299,19 +271,12 @@ async def admin(
             ChatMemberStatus.ADMINISTRATOR,
             ChatMemberStatus.OWNER,
         ):
-            await update.message.reply_text(
-                "✅ Anda adalah admin grup."
-            )
+            await update.message.reply_text("✅ Anda adalah admin grup.")
         else:
-            await update.message.reply_text(
-                "❌ Anda bukan admin grup."
-            )
+            await update.message.reply_text("❌ Anda bukan admin grup.")
 
     except Exception:
-        logger.exception(
-            "Gagal memeriksa status admin"
-        )
-
+        logger.exception("Gagal memeriksa status admin")
         await update.message.reply_text(
             "Status admin tidak dapat diperiksa."
         )
@@ -321,18 +286,11 @@ async def admin(
 # PESAN TEKS BIASA
 # =========================================================
 
-async def echo(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-) -> None:
-    if update.message is None:
-        return
-
-    if update.message.text is None:
+async def echo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.message is None or update.message.text is None:
         return
 
     safe_text = escape(update.message.text)
-
     await update.message.reply_text(
         f"<b>Pesan Anda:</b>\n{safe_text}",
         parse_mode=ParseMode.HTML,
@@ -343,10 +301,7 @@ async def echo(
 # ERROR HANDLER
 # =========================================================
 
-async def error_handler(
-    update: object,
-    context: ContextTypes.DEFAULT_TYPE,
-) -> None:
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     logger.error(
         "Terjadi error saat memproses update: %s",
         context.error,
@@ -359,68 +314,34 @@ async def error_handler(
 # =========================================================
 
 def main() -> None:
-    application = (
-        ApplicationBuilder()
-        .token(BOT_TOKEN)
-        .build()
-    )
+    application = ApplicationBuilder().token(BOT_TOKEN).build()
 
-    # Mendaftarkan command
-    application.add_handler(
-        CommandHandler("start", start)
-    )
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(CommandHandler("meme", meme))
+    application.add_handler(CommandHandler("cuaca", weather))
+    application.add_handler(CommandHandler("admin", admin))
 
     application.add_handler(
-        CommandHandler("help", help_command)
+        MessageHandler(filters.TEXT & ~filters.COMMAND, echo)
     )
 
-    application.add_handler(
-        CommandHandler("meme", meme)
-    )
-
-    application.add_handler(
-        CommandHandler("cuaca", weather)
-    )
-
-    application.add_handler(
-        CommandHandler("admin", admin)
-    )
-
-    # Menangani pesan teks biasa
-    application.add_handler(
-        MessageHandler(
-            filters.TEXT & ~filters.COMMAND,
-            echo,
-        )
-    )
-
-    # Mendaftarkan error handler
     application.add_error_handler(error_handler)
 
     logger.info("BlubcaBot mulai dijalankan")
-
     print("BlubcaBot berhasil terhubung dan sedang berjalan...")
 
-    # Perbaikan event loop untuk Python 3.14
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
 
     try:
-        application.run_polling(
-            allowed_updates=Update.ALL_TYPES
-        )
-
+        application.run_polling(allowed_updates=Update.ALL_TYPES)
     except KeyboardInterrupt:
         print("\nBlubcaBot dihentikan.")
-
     finally:
         asyncio.set_event_loop(None)
         loop.close()
 
-
-# =========================================================
-# MENJALANKAN PROGRAM
-# =========================================================
 
 if __name__ == "__main__":
     main()
