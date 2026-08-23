@@ -33,6 +33,7 @@ if not BOT_TOKEN:
     )
 
 BASE_DIR = Path(__file__).parent
+
 MEME_FOLDER = BASE_DIR / "assets" / "memes"
 
 ALLOWED_IMAGE_EXTENSIONS = {
@@ -42,7 +43,7 @@ ALLOWED_IMAGE_EXTENSIONS = {
     ".webp",
 }
 
-MAX_MEME_SIZE = 10 * 1024 * 1024  # 10 MB
+MAX_MEME_SIZE = 10 * 1024 * 1024  # Maksimal 10 MB
 
 
 # =========================================================
@@ -50,7 +51,7 @@ MAX_MEME_SIZE = 10 * 1024 * 1024  # 10 MB
 # =========================================================
 
 LOG_FOLDER = BASE_DIR / "logs"
-LOG_FOLDER.mkdir(exist_ok=True)
+LOG_FOLDER.mkdir(parents=True, exist_ok=True)
 
 logging.basicConfig(
     filename=LOG_FOLDER / "bot.log",
@@ -62,7 +63,7 @@ logger = logging.getLogger(__name__)
 
 
 # =========================================================
-# COMMAND /start
+# /start
 # =========================================================
 
 async def start(
@@ -79,7 +80,7 @@ async def start(
 
 
 # =========================================================
-# COMMAND /help
+# /help
 # =========================================================
 
 async def help_command(
@@ -100,7 +101,7 @@ async def help_command(
 
 
 # =========================================================
-# COMMAND /meme
+# /meme
 # =========================================================
 
 async def meme(
@@ -110,18 +111,18 @@ async def meme(
     if update.message is None:
         return
 
-    # Memastikan folder meme tersedia
+    # Membuat folder jika belum ada
     if not MEME_FOLDER.exists():
         MEME_FOLDER.mkdir(parents=True, exist_ok=True)
 
         await update.message.reply_text(
-            "Folder meme baru saja dibuat.\n"
-            "Masukkan gambar ke folder:\n"
+            "Folder meme belum berisi gambar.\n\n"
+            "Masukkan file gambar ke folder:\n"
             "assets/memes/"
         )
         return
 
-    # Mengambil semua gambar yang sesuai format dan ukuran
+    # Mengambil file gambar yang valid
     meme_files = [
         file
         for file in MEME_FOLDER.iterdir()
@@ -135,14 +136,31 @@ async def meme(
     if not meme_files:
         await update.message.reply_text(
             "Belum ada meme yang tersedia.\n\n"
-            "Masukkan file gambar .jpg, .jpeg, .png, "
-            "atau .webp ke folder:\n"
-            "assets/memes/"
+            "Masukkan gambar dengan format:\n"
+            ".jpg, .jpeg, .png, atau .webp\n\n"
+            "ke folder assets/memes/"
         )
         return
 
-    # Memilih gambar secara acak
-    selected_meme = random.choice(meme_files)
+    # Mengambil nama meme yang terakhir dikirim di chat ini
+    last_meme = context.chat_data.get("last_meme")
+
+    # Menghapus meme terakhir dari daftar pilihan
+    available_memes = [
+        file
+        for file in meme_files
+        if file.name != last_meme
+    ]
+
+    # Jika hanya ada satu file, gunakan file tersebut
+    if not available_memes:
+        available_memes = meme_files
+
+    # Memilih meme secara acak
+    selected_meme = random.choice(available_memes)
+
+    # Menyimpan meme terakhir agar tidak langsung terulang
+    context.chat_data["last_meme"] = selected_meme.name
 
     try:
         with selected_meme.open("rb") as photo:
@@ -152,7 +170,7 @@ async def meme(
             )
 
         logger.info(
-            "Meme dikirim: %s",
+            "Meme berhasil dikirim: %s",
             selected_meme.name,
         )
 
@@ -163,12 +181,12 @@ async def meme(
         )
 
         await update.message.reply_text(
-            "Gagal mengirim meme. Coba lagi."
+            "Gagal mengirim meme. Silakan coba lagi."
         )
 
 
 # =========================================================
-# COMMAND /cuaca
+# /cuaca
 # =========================================================
 
 async def weather(
@@ -195,11 +213,13 @@ async def weather(
         response = requests.get(
             f"https://wttr.in/{city}",
             params={
-                "format": "Lokasi: %l\n"
-                "Cuaca: %C\n"
-                "Suhu: %t\n"
-                "Terasa seperti: %f\n"
-                "Angin: %w"
+                "format": (
+                    "Lokasi: %l\n"
+                    "Cuaca: %C\n"
+                    "Suhu: %t\n"
+                    "Terasa seperti: %f\n"
+                    "Angin: %w"
+                )
             },
             timeout=10,
         )
@@ -214,7 +234,7 @@ async def weather(
         await update.message.reply_text(result)
 
         logger.info(
-            "Data cuaca dikirim untuk kota: %s",
+            "Data cuaca dikirim untuk: %s",
             city,
         )
 
@@ -230,7 +250,7 @@ async def weather(
 
 
 # =========================================================
-# COMMAND /admin
+# /admin
 # =========================================================
 
 async def admin(
@@ -274,7 +294,7 @@ async def admin(
 
 
 # =========================================================
-# PESAN BIASA
+# PESAN TEKS BIASA
 # =========================================================
 
 async def echo(
@@ -287,11 +307,10 @@ async def echo(
     if update.message.text is None:
         return
 
-    # Escape teks agar aman ketika menggunakan HTML
-    message_text = escape(update.message.text)
+    safe_text = escape(update.message.text)
 
     await update.message.reply_text(
-        f"<b>Pesan Anda:</b>\n{message_text}",
+        f"<b>Pesan Anda:</b>\n{safe_text}",
         parse_mode=ParseMode.HTML,
     )
 
@@ -312,7 +331,7 @@ async def error_handler(
 
 
 # =========================================================
-# PROGRAM UTAMA
+# FUNGSI UTAMA
 # =========================================================
 
 def main() -> None:
@@ -322,7 +341,7 @@ def main() -> None:
         .build()
     )
 
-    # Daftar command
+    # Mendaftarkan command
     application.add_handler(
         CommandHandler("start", start)
     )
@@ -351,14 +370,14 @@ def main() -> None:
         )
     )
 
-    # Menangani error
+    # Mendaftarkan error handler
     application.add_error_handler(error_handler)
 
     logger.info("BlubcaBot mulai dijalankan")
 
     print("BlubcaBot berhasil terhubung dan sedang berjalan...")
 
-    # Perbaikan untuk Python 3.14
+    # Perbaikan event loop untuk Python 3.14
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
 
@@ -374,6 +393,10 @@ def main() -> None:
         asyncio.set_event_loop(None)
         loop.close()
 
+
+# =========================================================
+# MENJALANKAN PROGRAM
+# =========================================================
 
 if __name__ == "__main__":
     main()
