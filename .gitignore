@@ -1,14 +1,5 @@
-# Virtual environment
-venv/
-
-# File konfigurasi sensitif
 .env
-config.py
-
-# File Python cache
+.venv/
 __pycache__/
-*.py[cod]
-
-# Logs
+*.pyc
 logs/
-*.log
