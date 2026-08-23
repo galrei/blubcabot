@@ -1,0 +1,3 @@
+python-telegram-bot==20.0
+python-dotenv==1.0.0  # Jika menggunakan .env
+requests==2.31.0      # Untuk API eksternal (cuaca/berita)
