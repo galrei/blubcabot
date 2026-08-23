@@ -43,7 +43,16 @@ ALLOWED_IMAGE_EXTENSIONS = {
     ".webp",
 }
 
-MAX_MEME_SIZE = 10 * 1024 * 1024  # Maksimal 10 MB
+ALLOWED_VIDEO_EXTENSIONS = {
+    ".mp4",
+    ".mov",
+    ".avi",
+    ".mkv",
+    ".webm",
+}
+
+MAX_IMAGE_SIZE = 10 * 1024 * 1024   # 10 MB (batas Telegram untuk foto)
+MAX_VIDEO_SIZE = 50 * 1024 * 1024   # 50 MB (batas Telegram untuk video)
 
 
 # =========================================================
@@ -94,7 +103,7 @@ async def help_command(
         "Daftar perintah:\n\n"
         "/start - Memulai bot\n"
         "/help - Menampilkan bantuan\n"
-        "/meme - Mengirim meme secara acak\n"
+        "/meme - Mengirim meme (gambar/video) secara acak\n"
         "/cuaca <kota> - Melihat cuaca\n"
         "/admin - Mengecek status admin grup"
     )
@@ -116,28 +125,32 @@ async def meme(
         MEME_FOLDER.mkdir(parents=True, exist_ok=True)
 
         await update.message.reply_text(
-            "Folder meme belum berisi gambar.\n\n"
-            "Masukkan file gambar ke folder:\n"
+            "Folder meme belum berisi file.\n\n"
+            "Masukkan file gambar atau video ke folder:\n"
             "assets/memes/"
         )
         return
 
-    # Mengambil file gambar yang valid
-    meme_files = [
-        file
-        for file in MEME_FOLDER.iterdir()
-        if (
-            file.is_file()
-            and file.suffix.lower() in ALLOWED_IMAGE_EXTENSIONS
-            and file.stat().st_size <= MAX_MEME_SIZE
-        )
-    ]
+    # Mengambil semua file yang valid (gambar + video)
+    meme_files = []
+    for file in MEME_FOLDER.iterdir():
+        if not file.is_file():
+            continue
+
+        ext = file.suffix.lower()
+        size = file.stat().st_size
+
+        if ext in ALLOWED_IMAGE_EXTENSIONS and size <= MAX_IMAGE_SIZE:
+            meme_files.append(file)
+        elif ext in ALLOWED_VIDEO_EXTENSIONS and size <= MAX_VIDEO_SIZE:
+            meme_files.append(file)
 
     if not meme_files:
         await update.message.reply_text(
             "Belum ada meme yang tersedia.\n\n"
-            "Masukkan gambar dengan format:\n"
-            ".jpg, .jpeg, .png, atau .webp\n\n"
+            "Masukkan file dengan format:\n"
+            "• Gambar: .jpg, .jpeg, .png, .webp (max 10 MB)\n"
+            "• Video : .mp4, .mov, .avi, .mkv, .webm (max 50 MB)\n\n"
             "ke folder assets/memes/"
         )
         return
@@ -163,11 +176,22 @@ async def meme(
     context.chat_data["last_meme"] = selected_meme.name
 
     try:
-        with selected_meme.open("rb") as photo:
-            await update.message.reply_photo(
-                photo=photo,
-                caption=f"😂 {selected_meme.stem}",
-            )
+        with selected_meme.open("rb") as media:
+            ext = selected_meme.suffix.lower()
+
+            if ext in ALLOWED_IMAGE_EXTENSIONS:
+                # Kirim sebagai foto
+                await update.message.reply_photo(
+                    photo=media,
+                    caption=f"😂 {selected_meme.stem}",
+                )
+            else:
+                # Kirim sebagai video
+                await update.message.reply_video(
+                    video=media,
+                    caption=f"😂 {selected_meme.stem}",
+                    supports_streaming=True,  # biar bisa di-stream langsung
+                )
 
         logger.info(
             "Meme berhasil dikirim: %s",
