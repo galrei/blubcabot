@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import os
 from html import escape
@@ -14,13 +15,18 @@ from telegram.ext import (
     filters,
 )
 
+# Membaca file .env
 load_dotenv()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
 if not BOT_TOKEN:
-    raise RuntimeError("BOT_TOKEN belum diatur di file .env")
+    raise RuntimeError(
+        "BOT_TOKEN belum ditemukan. "
+        "Pastikan file .env berada di folder yang sama dengan bot.py."
+    )
 
+# Membuat folder logs jika belum tersedia
 os.makedirs("logs", exist_ok=True)
 
 logging.basicConfig(
@@ -36,7 +42,7 @@ async def start(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ) -> None:
-    if not update.message:
+    if update.message is None:
         return
 
     await update.message.reply_text(
@@ -49,7 +55,7 @@ async def help_command(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ) -> None:
-    if not update.message:
+    if update.message is None:
         return
 
     await update.message.reply_text(
@@ -66,12 +72,11 @@ async def meme(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ) -> None:
-    if not update.message:
+    if update.message is None:
         return
 
     await update.message.reply_text(
-        "😄 Meme belum dikonfigurasi.\n"
-        "Tambahkan URL atau sumber meme pada fungsi meme()."
+        "😄 Fitur meme belum dikonfigurasi."
     )
 
 
@@ -79,7 +84,7 @@ async def weather(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ) -> None:
-    if not update.message:
+    if update.message is None:
         return
 
     if not context.args:
@@ -107,6 +112,7 @@ async def weather(
 
     except requests.RequestException:
         logger.exception("Gagal mengambil data cuaca")
+
         await update.message.reply_text(
             "Maaf, data cuaca sedang tidak tersedia."
         )
@@ -116,10 +122,13 @@ async def admin(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ) -> None:
-    if not update.message or not update.effective_chat:
+    if update.message is None:
         return
 
-    if not update.effective_user:
+    if update.effective_chat is None:
+        return
+
+    if update.effective_user is None:
         return
 
     try:
@@ -127,12 +136,10 @@ async def admin(
             update.effective_user.id
         )
 
-        is_admin = member.status in (
+        if member.status in (
             ChatMemberStatus.ADMINISTRATOR,
             ChatMemberStatus.OWNER,
-        )
-
-        if is_admin:
+        ):
             await update.message.reply_text(
                 "✅ Anda adalah admin grup."
             )
@@ -143,6 +150,7 @@ async def admin(
 
     except Exception:
         logger.exception("Gagal memeriksa status admin")
+
         await update.message.reply_text(
             "Status admin tidak dapat diperiksa."
         )
@@ -152,9 +160,13 @@ async def echo(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ) -> None:
-    if not update.message or not update.message.text:
+    if update.message is None:
         return
 
+    if update.message.text is None:
+        return
+
+    # Escape agar teks pengguna aman ketika memakai HTML parse mode
     text = escape(update.message.text)
 
     await update.message.reply_text(
@@ -167,8 +179,9 @@ async def error_handler(
     update: object,
     context: ContextTypes.DEFAULT_TYPE,
 ) -> None:
-    logger.exception(
-        "Terjadi error saat memproses update",
+    logger.error(
+        "Terjadi error saat memproses update: %s",
+        context.error,
         exc_info=context.error,
     )
 
@@ -211,9 +224,18 @@ def main() -> None:
 
     logger.info("BlubcaBot mulai dijalankan")
 
-    application.run_polling(
-        allowed_updates=Update.ALL_TYPES
-    )
+    # Perbaikan khusus Python 3.14:
+    # buat event loop secara manual sebelum run_polling().
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+
+    try:
+        application.run_polling(
+            allowed_updates=Update.ALL_TYPES
+        )
+    finally:
+        asyncio.set_event_loop(None)
+        loop.close()
 
 
 if __name__ == "__main__":
