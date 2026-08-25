@@ -12,65 +12,67 @@ blubcabot/
 
 # 🤖 BlubcaBot - Telegram Bot
 
-**BlubcaBot** adalah bot Telegram sederhana yang dibuat untuk [jelaskan fungsi utama bot, misal: "mengirim pesan lucu, mengelola grup, atau memberikan informasi cuaca"].
+**BlubcaBot** adalah bot Telegram serbaguna dengan fitur pengiriman meme berurutan, informasi cuaca, manajemen admin grup, serta pembaca & penampil media (gambar & video) otomatis dari link **𝕏 (Twitter)**.
 
 ## 📌 Fitur
-- 🔹 Fitur 1: [Contoh: "Mengirim pesan selamat pagi"]
-- 🔹 Fitur 2: [Contoh: "Menampilkan cuaca lokal"]
-- 🔹 Fitur 3: [Contoh: "Mengelola grup dengan perintah admin"]
+- 🔹 **𝕏 / Twitter Media Preview**: Membaca dan menampilkan gambar atau video dari postingan 𝕏 (Twitter) beserta caption dan link sumbernya.
+  - Mendukung auto-detect link saat dikirimkan di chat.
+  - Mendukung perintah `/x <link>` atau `/twitter <link>`.
+  - Mendukung link postingan (misal: `https://x.com/galreio/status/2091497352704229874`) dan link media CDN langsung (`https://pbs.twimg.com/media/...`).
+- 🔹 **Meme Berurutan**: Mengirim meme gambar/video dari folder `assets/memes/` lengkap dengan teks deskripsi/POV (`/meme`).
+- 🔹 **Cek Cuaca**: Mengambil info cuaca kota secara real-time (`/cuaca <kota>`).
+- 🔹 **Status Admin**: Mengecek status kepengurusan/admin grup (`/admin`).
 
 ## 🛠️ Cara Instalasi & Menjalankan Bot
 
 ### **Persyaratan**
 - Python 3.8+
-- Akun Telegram (untuk mendapatkan token bot)
-- [Opsional] API key untuk fitur tambahan (misal: cuaca, berita)
+- Akun Telegram (untuk mendapatkan token bot via [@BotFather](https://t.me/BotFather))
 
 ### **Langkah-langkah**
 1. **Clone repositori ini:**
    ```bash
-   git clone https://github.com/username/blubcabot.git
+   git clone https://github.com/galrei/blubcabot.git
    cd blubcabot
+   ```
 
-# Struktur Kode
+2. **Install dependensi:**
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+3. **Konfigurasi Environment (.env):**
+   Buat file `.env` di direktori proyek dan isi dengan token bot Telegram Anda:
+   ```env
+   BOT_TOKEN=your_telegram_bot_token_here
+   ```
+
+4. **Jalankan Bot:**
+   ```bash
+   python bot.py
+   ```
+   Atau jalankan file `jalankan_bot.bat` (di Windows).
+
+## 📜 Struktur Proyek
 ```
 blubcabot/
-├── bot.py              # Logika utama bot
-├── config.py           # Konfigurasi (token, API keys)
-├── requirements.txt    # Dependensi Python
-└── .gitignore          # File yang diabaikan Git
+├── .env                 # File environment (token bot, dsb.)
+├── .gitignore           # File yang diabaikan Git
+├── README.md            # Dokumentasi proyek
+├── requirements.txt     # Dependensi Python
+├── config.py            # Konfigurasi opsional
+├── bot.py               # Logika utama bot Telegram
+├── jalankan_bot.bat     # Batch script untuk menjalankan bot di Windows
+└── assets/
+    └── memes/           # Folder media meme (foto, video, file .txt)
 ```
-# 🤝 Kontribusi
 
-## Jika Anda ingin berkontribusi:
+## 🤝 Kontribusi
+1. Fork repositori ini.
+2. Buat branch baru (`git checkout -b fitur-baru`).
+3. Commit perubahan (`git commit -m "Tambah fitur X"`).
+4. Push ke branch (`git push origin fitur-baru`).
+5. Buat Pull Request.
 
-    1. Fork repositori ini.
-    2. Buat branch baru (git checkout -b fitur-baru).
-    3. Commit perubahan (git commit -m "Tambah fitur X").
-    4. Push ke branch (git push origin fitur-baru).
-    5. Buat Pull Request.
-
-# 📜 Lisensi
-
-Proyek ini dilisensikan di bawah MIT License [blocked].
-
-
----
-
----
-
-## **2. File `config.py`**
-```python
-# Konfigurasi untuk BlubcaBot
-# JANGAN BAGIKAN FILE INI KE PUBLIK! (Simpan di .gitignore)
-
-# Token bot Telegram (dapatkan dari @BotFather)
-BOT_TOKEN = "YOUR_TELEGRAM_BOT_TOKEN"
-
-# [Opsional] API keys untuk fitur tambahan
-WEATHER_API_KEY = "YOUR_WEATHER_API_KEY"  # Contoh: OpenWeatherMap
-NEWS_API_KEY = "YOUR_NEWS_API_KEY"        # Contoh: NewsAPI
-
-
-
-
+## 📜 Lisensi
+Proyek ini dilisensikan di bawah MIT License.
