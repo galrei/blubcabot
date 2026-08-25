@@ -3,6 +3,9 @@ import io
 import logging
 import os
 import re
+import subprocess
+import sys
+import tempfile
 from html import escape
 from pathlib import Path
 
@@ -227,6 +230,120 @@ def download_media_stream(url: str) -> io.BytesIO | None:
         return None
 
 
+def download_with_ytdlp(url: str, output_path: str) -> tuple[bool, str]:
+    """
+    Mengunduh video menggunakan yt-dlp ke output_path.
+    Mengembalikan (sukses: bool, pesan_error: str).
+    Format yang dipilih: video terbaik ≤ 50 MB (mp4/webm) dengan fallback ke format terkecil.
+    """
+    cmd = [
+        sys.executable, "-m", "yt_dlp",
+        "--no-playlist",
+        "--no-warnings",
+        "--quiet",
+        "-f", "bestvideo[ext=mp4][filesize<45M]+bestaudio[ext=m4a]/bestvideo[filesize<45M]+bestaudio/best[filesize<45M]/best",
+        "--merge-output-format", "mp4",
+        "-o", output_path,
+        url,
+    ]
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        if result.returncode == 0:
+            return True, ""
+        err = (result.stderr or result.stdout or "Unknown error").strip()
+        logger.warning("yt-dlp gagal untuk %s: %s", url, err)
+        return False, err
+    except subprocess.TimeoutExpired:
+        logger.error("yt-dlp timeout untuk %s", url)
+        return False, "Proses download timeout."
+    except Exception as exc:
+        logger.error("Error saat menjalankan yt-dlp untuk %s: %s", url, exc)
+        return False, str(exc)
+
+
+async def process_generic_video(update: Update, url: str) -> bool:
+    """
+    Mengunduh dan mengirimkan video dari URL apapun menggunakan yt-dlp.
+    Mendukung: YouTube, Streamrizz, HLS, dan ratusan situs video lainnya.
+    """
+    if update.message is None:
+        return False
+
+    status_msg = await update.message.reply_text(
+        "⏳ Sedang mengunduh video, mohon tunggu...\n"
+        "_(Proses ini bisa memakan waktu hingga 1-2 menit untuk video besar)_",
+        parse_mode=ParseMode.HTML,
+    )
+
+    loop = asyncio.get_running_loop()
+
+    # Jalankan yt-dlp di thread terpisah agar tidak memblokir event loop
+    with tempfile.TemporaryDirectory() as tmpdir:
+        output_path = os.path.join(tmpdir, "video.%(ext)s")
+        final_path_template = os.path.join(tmpdir, "video.mp4")
+
+        success, err_msg = await loop.run_in_executor(
+            None,
+            download_with_ytdlp,
+            url,
+            output_path,
+        )
+
+        if not success:
+            await status_msg.edit_text(
+                f"❌ Gagal mengunduh video dari link tersebut.\n\n"
+                f"<i>Kemungkinan penyebab: link tidak didukung, konten privat, atau format tidak tersedia.</i>",
+                parse_mode=ParseMode.HTML,
+            )
+            return False
+
+        # Cari file hasil unduhan (yt-dlp bisa menghasilkan .mp4, .webm, dst.)
+        downloaded_files = list(Path(tmpdir).glob("video.*"))
+        if not downloaded_files:
+            await status_msg.edit_text(
+                "❌ File video tidak ditemukan setelah proses unduhan.",
+            )
+            return False
+
+        video_file = downloaded_files[0]
+        file_size = video_file.stat().st_size
+
+        # Cek batas ukuran Telegram (50 MB)
+        if file_size > MAX_VIDEO_SIZE:
+            await status_msg.edit_text(
+                f"⚠️ Video terlalu besar untuk dikirim via Telegram "
+                f"({file_size / (1024*1024):.1f} MB, batas 50 MB).\n\n"
+                f'🔗 <a href="{escape(url)}">Buka link langsung</a>',
+                parse_mode=ParseMode.HTML,
+                disable_web_page_preview=False,
+            )
+            return False
+
+        # Kirim video ke chat
+        try:
+            await status_msg.edit_text("📤 Mengirim video...")
+            with open(video_file, "rb") as vf:
+                await update.message.reply_video(
+                    video=vf,
+                    caption=f'📹 <b>Video</b>\n\n🔗 <a href="{escape(url)}">Link Sumber</a>',
+                    parse_mode=ParseMode.HTML,
+                    supports_streaming=True,
+                )
+            await status_msg.delete()
+            return True
+        except Exception:
+            logger.exception("Gagal mengirim video dari %s", url)
+            await status_msg.edit_text(
+                "❌ Gagal mengirim video ke Telegram. Silakan coba lagi."
+            )
+            return False
+
+
 async def process_x_status(update: Update, username: str, status_id: str) -> bool:
     """Memproses dan mengirimkan postingan dan media dari URL tweet 𝕏."""
     if update.message is None:
@@ -440,10 +557,13 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "/start - Memulai bot\n"
         "/help - Menampilkan bantuan\n"
         "/x <link> - Menampilkan gambar/video dari link 𝕏 (Twitter)\n"
+        "/video <link> - Mengunduh & mengirim video dari link manapun\n"
+        "   ↳ Alias: /dl\n"
         "/meme - Mengirim meme berikutnya (berurutan)\n"
         "/cuaca <kota> - Melihat cuaca\n"
         "/admin - Mengecek status admin grup\n\n"
-        "💡 Anda juga bisa langsung mengirimkan link 𝕏 atau link gambar/video di chat tanpa perintah /x!"
+        "💡 Kirim link 𝕏 langsung di chat untuk auto-preview!\n"
+        "🎬 /video mendukung YouTube, TikTok, Streamrizz, Dailymotion, dll."
     )
 
 
@@ -486,6 +606,39 @@ async def x_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
         "❌ Link yang Anda masukkan bukan link postingan atau media 𝕏 / Twitter yang valid."
     )
+
+
+# =========================================================
+# /video & /dl – Universal video downloader
+# =========================================================
+
+async def video_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Mengunduh dan mengirimkan video dari berbagai platform menggunakan yt-dlp."""
+    if update.message is None:
+        return
+
+    if not context.args:
+        await update.message.reply_text(
+            "Gunakan format:\n"
+            "/video <link video>\n\n"
+            "Contoh:\n"
+            "• /video https://streamrizz.com/d/8mj9idpoehft\n"
+            "• /video https://youtu.be/dQw4w9WgXcQ\n"
+            "• /video https://vm.tiktok.com/xxxxx\n\n"
+            "💡 Mendukung ratusan situs video (YouTube, TikTok, Streamrizz, Dailymotion, dll.)"
+        )
+        return
+
+    url = context.args[0].strip()
+
+    # Validasi minimal bahwa input adalah URL
+    if not re.match(r"https?://", url, re.IGNORECASE):
+        await update.message.reply_text(
+            "❌ Input harus berupa URL yang valid (dimulai dengan http:// atau https://)."
+        )
+        return
+
+    await process_generic_video(update, url)
 
 
 # =========================================================
@@ -700,6 +853,8 @@ def main() -> None:
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("x", x_command))
     application.add_handler(CommandHandler("twitter", x_command))
+    application.add_handler(CommandHandler("video", video_command))
+    application.add_handler(CommandHandler("dl", video_command))
     application.add_handler(CommandHandler("meme", meme))
     application.add_handler(CommandHandler("cuaca", weather))
     application.add_handler(CommandHandler("admin", admin))
