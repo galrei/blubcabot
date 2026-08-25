@@ -58,6 +58,10 @@ TWIMG_VIDEO_REGEX = re.compile(
     r"https?://video\.twimg\.com/[^\s]+",
     re.IGNORECASE,
 )
+STREAMRIZZ_REGEX = re.compile(
+    r"https?://(?:www\.)?streamrizz\.com/(?:d|e)/([a-zA-Z0-9]+)",
+    re.IGNORECASE,
+)
 
 
 # =========================================================
@@ -230,62 +234,212 @@ def download_media_stream(url: str) -> io.BytesIO | None:
         return None
 
 
+def fetch_streamrizz_direct_url(video_id: str) -> str | None:
+    """
+    Mengekstrak URL video langsung dari Streamrizz menggunakan custom scraper.
+    Mengembalikan URL direct MP4/HLS atau None jika gagal.
+    Alur: /d/{id} → cari iframeId & embedToken → /ip129jk → cari stream.php → cari URL video CDN.
+    """
+    base_page_url = f"https://streamrizz.com/d/{video_id}"
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+
+    try:
+        # Langkah 1: Ambil halaman utama, cari iframeId & embedToken
+        resp = requests.get(base_page_url, headers=headers, timeout=15)
+        resp.raise_for_status()
+        html = resp.text
+
+        iframe_match = re.search(r"var iframeId = '([^']+)'", html)
+        token_match = re.search(r"var embedToken = '([^']+)'", html)
+        if not iframe_match or not token_match:
+            logger.warning("Streamrizz: iframeId/embedToken tidak ditemukan di %s", base_page_url)
+            return None
+
+        iframe_id = iframe_match.group(1)
+        embed_token = token_match.group(1)
+
+        # Langkah 2: Akses embed iframe untuk mendapatkan URL stream.php
+        embed_url = f"https://streamrizz.com/ip129jk?id={iframe_id}&t={embed_token}"
+        r2 = requests.get(
+            embed_url,
+            headers={**headers, "Referer": base_page_url},
+            timeout=15,
+        )
+        r2.raise_for_status()
+
+        stream_match = re.search(r'href="(https://streamrizz\.com/stream\.php[^"]+)"', r2.text)
+        if not stream_match:
+            logger.warning("Streamrizz: stream.php URL tidak ditemukan")
+            return None
+
+        stream_url = stream_match.group(1).replace("&amp;", "&")
+
+        # Langkah 3: Akses stream.php untuk mendapatkan URL video CDN
+        r3 = requests.get(
+            stream_url,
+            headers={**headers, "Referer": "https://streamrizz.com/"},
+            timeout=15,
+        )
+        r3.raise_for_status()
+
+        # Cari URL video CDN (overfetch.video atau domain CDN lain)
+        cdn_match = re.search(
+            r"['\"]([^'\"]*(?:overfetch\.video|vidoycdn)[^'\"]*(?:\.m3u8|\.mp4)?[^'\"]*)['\"]",
+            r3.text,
+        )
+        if cdn_match:
+            video_url = cdn_match.group(1)
+            logger.info("Streamrizz: URL video ditemukan: %s", video_url[:80])
+            return video_url
+
+        # Fallback: cari semua URL mp4/m3u8 dalam response
+        fallback = re.findall(
+            r"https?://[^\s\"'\\]+\.(?:mp4|m3u8)[^\s\"'\\]*", r3.text
+        )
+        if fallback:
+            logger.info("Streamrizz fallback URL: %s", fallback[0][:80])
+            return fallback[0]
+
+        logger.warning("Streamrizz: tidak ada URL video ditemukan di stream.php")
+        return None
+
+    except Exception as exc:
+        logger.error("Error scraping Streamrizz %s: %s", video_id, exc)
+        return None
+
+
 def download_with_ytdlp(url: str, output_path: str) -> tuple[bool, str]:
     """
     Mengunduh video menggunakan yt-dlp ke output_path.
     Mengembalikan (sukses: bool, pesan_error: str).
-    Format yang dipilih: video terbaik ≤ 50 MB (mp4/webm) dengan fallback ke format terkecil.
+    Mencoba beberapa strategi format secara berurutan untuk kompatibilitas maksimal.
     """
-    cmd = [
+    # Daftar strategi format, dari terbaik ke paling kompatibel
+    format_strategies = [
+        "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo[ext=mp4]+bestaudio/best[ext=mp4]/best",
+        "bestvideo+bestaudio/best",
+        "best",
+    ]
+
+    base_args = [
         sys.executable, "-m", "yt_dlp",
         "--no-playlist",
-        "--no-warnings",
-        "--quiet",
-        "-f", "bestvideo[ext=mp4][filesize<45M]+bestaudio[ext=m4a]/bestvideo[filesize<45M]+bestaudio/best[filesize<45M]/best",
         "--merge-output-format", "mp4",
         "-o", output_path,
-        url,
+        "--socket-timeout", "30",
+        "--retries", "3",
     ]
-    try:
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=120,
-        )
-        if result.returncode == 0:
-            return True, ""
-        err = (result.stderr or result.stdout or "Unknown error").strip()
-        logger.warning("yt-dlp gagal untuk %s: %s", url, err)
-        return False, err
-    except subprocess.TimeoutExpired:
-        logger.error("yt-dlp timeout untuk %s", url)
-        return False, "Proses download timeout."
-    except Exception as exc:
-        logger.error("Error saat menjalankan yt-dlp untuk %s: %s", url, exc)
-        return False, str(exc)
+
+    last_err = "Unknown error"
+
+    for fmt in format_strategies:
+        cmd = base_args + ["-f", fmt, url]
+        try:
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=180,
+            )
+            if result.returncode == 0:
+                return True, ""
+            last_err = (result.stderr or result.stdout or "Unknown error").strip()
+            logger.warning("yt-dlp format '%s' gagal untuk %s: %s", fmt, url, last_err[:200])
+        except subprocess.TimeoutExpired:
+            logger.error("yt-dlp timeout untuk %s", url)
+            return False, "Proses download timeout (>3 menit)."
+        except Exception as exc:
+            logger.error("Error saat menjalankan yt-dlp untuk %s: %s", url, exc)
+            return False, str(exc)
+
+    # Semua strategi gagal
+    return False, last_err
 
 
 async def process_generic_video(update: Update, url: str) -> bool:
     """
-    Mengunduh dan mengirimkan video dari URL apapun menggunakan yt-dlp.
-    Mendukung: YouTube, Streamrizz, HLS, dan ratusan situs video lainnya.
+    Mengunduh dan mengirimkan video dari URL apapun.
+    - Streamrizz: gunakan custom scraper untuk mendapatkan URL CDN langsung, lalu unduh via HTTP
+    - Situs lain: gunakan yt-dlp (mendukung YouTube, TikTok, Dailymotion, dll.)
     """
     if update.message is None:
         return False
 
     status_msg = await update.message.reply_text(
         "⏳ Sedang mengunduh video, mohon tunggu...\n"
-        "_(Proses ini bisa memakan waktu hingga 1-2 menit untuk video besar)_",
+        "<i>(Proses ini bisa memakan waktu hingga 1-2 menit)</i>",
         parse_mode=ParseMode.HTML,
     )
 
     loop = asyncio.get_running_loop()
 
-    # Jalankan yt-dlp di thread terpisah agar tidak memblokir event loop
+    async def _send_video_file(video_file: Path) -> bool:
+        """Helper: cek ukuran lalu kirim video ke chat."""
+        file_size = video_file.stat().st_size
+        if file_size > MAX_VIDEO_SIZE:
+            await status_msg.edit_text(
+                f"⚠️ Video terlalu besar untuk dikirim via Telegram "
+                f"({file_size / (1024 * 1024):.1f} MB, batas 50 MB).\n\n"
+                f'🔗 <a href="{escape(url)}">Buka link langsung</a>',
+                parse_mode=ParseMode.HTML,
+            )
+            return False
+        await status_msg.edit_text("📤 Mengirim video...")
+        with open(video_file, "rb") as vf:
+            await update.message.reply_video(
+                video=vf,
+                caption=f'📹 <b>Video</b>\n\n🔗 <a href="{escape(url)}">Link Sumber</a>',
+                parse_mode=ParseMode.HTML,
+                supports_streaming=True,
+            )
+        await status_msg.delete()
+        return True
+
+    # ── Jalur 1: Streamrizz ─────────────────────────────────────────────────
+    streamrizz_match = STREAMRIZZ_REGEX.search(url)
+    if streamrizz_match:
+        video_id = streamrizz_match.group(1)
+        await status_msg.edit_text("⏳ Mengambil link video dari Streamrizz...")
+
+        direct_url = await loop.run_in_executor(
+            None, fetch_streamrizz_direct_url, video_id
+        )
+
+        if direct_url:
+            # Unduh langsung via HTTP (bukan yt-dlp)
+            await status_msg.edit_text("⬇️ Mengunduh video Streamrizz...")
+            with tempfile.TemporaryDirectory() as tmpdir:
+                out_path = Path(tmpdir) / "video.mp4"
+                try:
+                    r = await loop.run_in_executor(
+                        None,
+                        lambda: requests.get(
+                            direct_url,
+                            headers={"User-Agent": "Mozilla/5.0", "Referer": "https://streamrizz.com/"},
+                            timeout=120,
+                            stream=True,
+                        ),
+                    )
+                    r.raise_for_status()
+                    with open(out_path, "wb") as f:
+                        for chunk in r.iter_content(chunk_size=1024 * 1024):
+                            f.write(chunk)
+                    return await _send_video_file(out_path)
+                except Exception:
+                    logger.exception("Gagal mengunduh video Streamrizz dari %s", direct_url)
+                    # Jatuh ke fallback yt-dlp di bawah
+
+        # Fallback jika scraper gagal
+        await status_msg.edit_text(
+            "❌ Gagal mengambil link video dari Streamrizz.\n\n"
+            "<i>Link mungkin sudah kedaluwarsa atau konten tidak tersedia.</i>",
+            parse_mode=ParseMode.HTML,
+        )
+        return False
+
+    # ── Jalur 2: Situs lain (yt-dlp) ────────────────────────────────────────
     with tempfile.TemporaryDirectory() as tmpdir:
         output_path = os.path.join(tmpdir, "video.%(ext)s")
-        final_path_template = os.path.join(tmpdir, "video.mp4")
 
         success, err_msg = await loop.run_in_executor(
             None,
@@ -296,13 +450,12 @@ async def process_generic_video(update: Update, url: str) -> bool:
 
         if not success:
             await status_msg.edit_text(
-                f"❌ Gagal mengunduh video dari link tersebut.\n\n"
-                f"<i>Kemungkinan penyebab: link tidak didukung, konten privat, atau format tidak tersedia.</i>",
+                "❌ Gagal mengunduh video dari link tersebut.\n\n"
+                "<i>Kemungkinan penyebab: link tidak didukung, konten privat, atau format tidak tersedia.</i>",
                 parse_mode=ParseMode.HTML,
             )
             return False
 
-        # Cari file hasil unduhan (yt-dlp bisa menghasilkan .mp4, .webm, dst.)
         downloaded_files = list(Path(tmpdir).glob("video.*"))
         if not downloaded_files:
             await status_msg.edit_text(
@@ -310,38 +463,15 @@ async def process_generic_video(update: Update, url: str) -> bool:
             )
             return False
 
-        video_file = downloaded_files[0]
-        file_size = video_file.stat().st_size
-
-        # Cek batas ukuran Telegram (50 MB)
-        if file_size > MAX_VIDEO_SIZE:
-            await status_msg.edit_text(
-                f"⚠️ Video terlalu besar untuk dikirim via Telegram "
-                f"({file_size / (1024*1024):.1f} MB, batas 50 MB).\n\n"
-                f'🔗 <a href="{escape(url)}">Buka link langsung</a>',
-                parse_mode=ParseMode.HTML,
-                disable_web_page_preview=False,
-            )
-            return False
-
-        # Kirim video ke chat
         try:
-            await status_msg.edit_text("📤 Mengirim video...")
-            with open(video_file, "rb") as vf:
-                await update.message.reply_video(
-                    video=vf,
-                    caption=f'📹 <b>Video</b>\n\n🔗 <a href="{escape(url)}">Link Sumber</a>',
-                    parse_mode=ParseMode.HTML,
-                    supports_streaming=True,
-                )
-            await status_msg.delete()
-            return True
+            return await _send_video_file(downloaded_files[0])
         except Exception:
             logger.exception("Gagal mengirim video dari %s", url)
             await status_msg.edit_text(
                 "❌ Gagal mengirim video ke Telegram. Silakan coba lagi."
             )
             return False
+
 
 
 async def process_x_status(update: Update, username: str, status_id: str) -> bool:
